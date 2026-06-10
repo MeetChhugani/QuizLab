@@ -2,7 +2,7 @@ import streamlit as st
 import json
 import os
 from groq import Groq
-from utils import generate_markdown, generate_anki
+from utils import generate_markdown, generate_anki, generate_single_question
 from pdf_parser import extract_text_from_pdf
 
 st.set_page_config(page_title="QuizLab - PDF & Text MCQ Generator", page_icon="🧠", layout="centered")
@@ -410,9 +410,17 @@ st.markdown('<p class="hero-sub">Generate premium AI-crafted MCQs from any PDF o
 # Read API key silently from secrets/env (do not expose in UI)
 api_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
 
+st.sidebar.markdown("### 🧠 Quiz Mode")
+quiz_mode = st.sidebar.radio("Mode Selection", ["Classic Mode", "Adaptive Difficulty 🧠"], help="Classic generates all questions upfront. Adaptive adjusts difficulty dynamically based on your correctness.")
+
 st.sidebar.markdown("### 🛠️ Generation Rules")
 num_mcqs = st.sidebar.slider("Number of Questions", min_value=3, max_value=20, value=5, step=1)
-difficulty = st.sidebar.selectbox("Difficulty", ["Easy", "Medium", "Hard"])
+
+if quiz_mode == "Adaptive Difficulty 🧠":
+    difficulty = st.sidebar.selectbox("Starting Difficulty", ["Easy", "Medium", "Hard"], index=1)
+else:
+    difficulty = st.sidebar.selectbox("Difficulty", ["Easy", "Medium", "Hard"], index=1)
+
 custom_focus = st.sidebar.text_input("Custom Focus / Topic (Optional)", placeholder="e.g. key dates, definitions, math")
 
 # Hardcode the model backend
@@ -475,9 +483,41 @@ if st.button("Generate Quiz ⚡"):
             st.warning("⚠️ The document is very long. Only the first ~8,000 characters were used to generate questions to keep within AI limits.")
             text = text[:8000]
 
-        focus_instruction = f"- Questions should focus specifically on: '{custom_focus}'." if custom_focus.strip() else ""
+        if not api_key:
+            st.error("⚠️ Groq API Key not found. Please check your environment or secrets.toml.")
+            st.stop()
 
-        prompt = f"""You are an expert exam question creator.
+        if quiz_mode == "Adaptive Difficulty 🧠":
+            # Set up session state for Adaptive mode
+            st.session_state["quiz_mode"] = "Adaptive Difficulty 🧠"
+            st.session_state["num_mcqs"] = num_mcqs
+            st.session_state["study_text"] = text
+            st.session_state["custom_focus"] = custom_focus
+            st.session_state["difficulty_history"] = [difficulty]
+            st.session_state["mcqs"] = []
+            st.session_state["answers"] = {}
+            st.session_state["submitted"] = False
+            st.session_state["quiz_page"] = 0
+
+            with st.spinner("AI is crafting the first question..."):
+                q_dict, err = generate_single_question(text, difficulty, [], api_key, model_name, custom_focus)
+                if err:
+                    st.error(f"⚠️ Groq API Error: {err}")
+                    st.stop()
+                elif q_dict:
+                    st.session_state["mcqs"] = [q_dict]
+                    st.rerun()
+        else:
+            # Classic Mode
+            st.session_state["quiz_mode"] = "Classic Mode"
+            st.session_state["difficulty"] = difficulty
+            st.session_state["answers"] = {}
+            st.session_state["submitted"] = False
+            st.session_state["quiz_page"] = 0
+
+            focus_instruction = f"- Questions should focus specifically on: '{custom_focus}'." if custom_focus.strip() else ""
+
+            prompt = f"""You are an expert exam question creator.
 
 Based on the following text, generate exactly {num_mcqs} multiple choice questions.
 Difficulty level: {difficulty} — {diff_map[difficulty]}.
@@ -510,52 +550,45 @@ JSON format:
 TEXT:
 {text}"""
 
-        if not api_key:
-            st.error("⚠️ Groq API Key not found. Please provide it in the sidebar or in secrets.toml.")
-            st.stop()
+            with st.spinner("AI is crafting questions..."):
+                try:
+                    client = Groq(api_key=api_key)
+                    response = client.chat.completions.create(
+                        model=model_name,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.45,
+                        max_tokens=3500
+                    )
+                    raw = response.choices[0].message.content.strip()
 
-        with st.spinner("AI is crafting questions..."):
-            try:
-                client = Groq(api_key=api_key)
-                response = client.chat.completions.create(
-                    model=model_name,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.45,
-                    max_tokens=3500
-                )
-                raw = response.choices[0].message.content.strip()
+                    # Clean markdown format backticks
+                    if "```" in raw:
+                        parts = raw.split("```")
+                        for part in parts:
+                            part = part.strip()
+                            if part.startswith("json"):
+                                part = part[4:].strip()
+                            if part.startswith("["):
+                                raw = part
+                                break
 
-                # Clean markdown format backticks
-                if "```" in raw:
-                    parts = raw.split("```")
-                    for part in parts:
-                        part = part.strip()
-                        if part.startswith("json"):
-                            part = part[4:].strip()
-                        if part.startswith("["):
-                            raw = part
-                            break
+                    mcqs = json.loads(raw)
+                    st.session_state["mcqs"] = mcqs
+                    st.session_state["difficulty_history"] = [difficulty] * len(mcqs)
+                    st.rerun()
 
-                mcqs = json.loads(raw)
-                st.session_state["mcqs"] = mcqs
-                st.session_state["answers"] = {}
-                st.session_state["submitted"] = False
-                st.session_state["difficulty"] = difficulty
-                st.session_state["quiz_page"] = 0
-
-            except json.JSONDecodeError:
-                st.error("⚠️ AI returned invalid JSON format. Please try generating again.")
-                st.stop()
-            except Exception as e:
-                st.error(f"⚠️ API Connection Error: {e}")
-                st.stop()
+                except json.JSONDecodeError:
+                    st.error("⚠️ AI returned invalid JSON format. Please try generating again.")
+                    st.stop()
+                except Exception as e:
+                    st.error(f"⚠️ API Connection Error: {e}")
+                    st.stop()
 
 # ── Render Quiz UI ────────────────────────────────────────────────
 if "mcqs" in st.session_state and st.session_state["mcqs"]:
     mcqs = st.session_state["mcqs"]
     submitted = st.session_state.get("submitted", False)
-    diff = st.session_state.get("difficulty", "Medium")
-    diff_class = {"Easy": "easy", "Medium": "medium", "Hard": "hard"}.get(diff, "medium")
+    active_quiz_mode = st.session_state.get("quiz_mode", "Classic Mode")
 
     st.markdown("<br><hr style='border-color: rgba(255,255,255,0.05)'><br>", unsafe_allow_html=True)
 
@@ -565,33 +598,46 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
         
         st.sidebar.markdown("---")
         st.sidebar.markdown("### 📝 Quiz Progress")
-        answered = sum(1 for i in range(len(mcqs)) if st.session_state["answers"].get(i) is not None)
-        st.sidebar.markdown(f"Answered: **{answered} of {len(mcqs)}**")
-        st.sidebar.progress(answered / len(mcqs))
         
-        st.sidebar.markdown("### 🎯 Jump to Question")
-        cols = st.sidebar.columns(2)
-        for idx in range(len(mcqs)):
-            col = cols[idx % 2]
-            is_ans = st.session_state["answers"].get(idx) is not None
-            if idx == current_idx:
-                label = f"Q{idx+1} ⚡"
-                btn_type = "primary"
-            elif is_ans:
-                label = f"Q{idx+1} ✓"
-                btn_type = "secondary"
-            else:
-                label = f"Q{idx+1}"
-                btn_type = "secondary"
-                
-            if col.button(label, key=f"jump_{idx}", type=btn_type):
-                st.session_state["quiz_page"] = idx
+        if active_quiz_mode == "Adaptive Difficulty 🧠":
+            total_qs = st.session_state.get("num_mcqs", 5)
+            st.sidebar.markdown(f"Question: **{current_idx + 1} of {total_qs}**")
+            st.sidebar.progress((current_idx) / total_qs)
+            
+            st.sidebar.markdown("### 🎯 Adaptive Difficulty State")
+            curr_diff = st.session_state["difficulty_history"][current_idx]
+            diff_class = {"Easy": "easy", "Medium": "medium", "Hard": "hard"}.get(curr_diff, "medium")
+            st.sidebar.markdown(f"Current Level: <span class='diff-badge diff-{diff_class}'>{curr_diff}</span>", unsafe_allow_html=True)
+            st.sidebar.markdown("*(Difficulty updates dynamically based on correctness)*")
+        else:
+            total_qs = len(mcqs)
+            answered = sum(1 for i in range(total_qs) if st.session_state["answers"].get(i) is not None)
+            st.sidebar.markdown(f"Answered: **{answered} of {total_qs}**")
+            st.sidebar.progress(answered / total_qs)
+            
+            st.sidebar.markdown("### 🎯 Jump to Question")
+            cols = st.sidebar.columns(2)
+            for idx in range(total_qs):
+                col = cols[idx % 2]
+                is_ans = st.session_state["answers"].get(idx) is not None
+                if idx == current_idx:
+                    label = f"Q{idx+1} ⚡"
+                    btn_type = "primary"
+                elif is_ans:
+                    label = f"Q{idx+1} ✓"
+                    btn_type = "secondary"
+                else:
+                    label = f"Q{idx+1}"
+                    btn_type = "secondary"
+                    
+                if col.button(label, key=f"jump_{idx}", type=btn_type):
+                    st.session_state["quiz_page"] = idx
+                    st.rerun()
+                    
+            st.sidebar.markdown("---")
+            if st.sidebar.button("Submit Quiz ✅", key="sidebar_submit"):
+                st.session_state["submitted"] = True
                 st.rerun()
-                
-        st.sidebar.markdown("---")
-        if st.sidebar.button("Submit Quiz ✅", key="sidebar_submit"):
-            st.session_state["submitted"] = True
-            st.rerun()
 
     # ── Scoreboard Analytics (Graded Review Phase) ────────────────
     if submitted:
@@ -605,7 +651,7 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
         st.markdown(f"""
         <div class="score-box">
             <div class="score-number">{correct_count}/{len(mcqs)}</div>
-            <div class="score-label">{pct}% Correct · {diff} Level</div>
+            <div class="score-label">{pct}% Correct · {active_quiz_mode}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -625,6 +671,112 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
                 category_stats[cat][0] += 1
             else:
                 missed_questions.append((i, q, user_ans))
+
+        # Render custom flowchart for adaptive mode
+        if active_quiz_mode == "Adaptive Difficulty 🧠":
+            st.markdown("### 🗺️ Adaptive Pathway Timeline")
+            
+            nodes_html = []
+            for idx, q in enumerate(mcqs):
+                user_ans = st.session_state["answers"].get(idx)
+                correct_ans = q["correct"]
+                is_corr = (user_ans == correct_ans)
+                node_diff = st.session_state["difficulty_history"][idx]
+                
+                status_icon = "✓ Correct" if is_corr else "✗ Incorrect"
+                node_class = "correct" if is_corr else "incorrect"
+                
+                node_html = f"""
+                <div class="flow-node {node_class}">
+                    <div class="node-q">Q{idx+1}</div>
+                    <div class="node-diff">{node_diff}</div>
+                    <div class="node-status">{status_icon}</div>
+                </div>
+                """
+                nodes_html.append(node_html)
+            
+            arrow_html = '<div class="flow-arrow">➔</div>'
+            flowchart_html = f"""
+            <style>
+            .flow-container {{
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                justify-content: center;
+                gap: 15px;
+                margin: 1.5rem 0 2.5rem 0;
+                padding: 1.5rem;
+                background: rgba(20, 26, 38, 0.5);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 16px;
+                box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+                backdrop-filter: blur(8px);
+            }}
+            .flow-node {{
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                padding: 10px 18px;
+                border-radius: 12px;
+                min-width: 110px;
+                text-align: center;
+                background: rgba(15, 20, 30, 0.8);
+                border: 2px solid;
+                transition: all 0.3s ease;
+            }}
+            .flow-node.correct {{
+                border-color: #10b981;
+                box-shadow: 0 0 15px rgba(16, 185, 129, 0.2);
+            }}
+            .flow-node.correct .node-q, .flow-node.correct .node-status {{
+                color: #10b981 !important;
+            }}
+            .flow-node.incorrect {{
+                border-color: #ef4444;
+                box-shadow: 0 0 15px rgba(239, 68, 68, 0.2);
+            }}
+            .flow-node.incorrect .node-q, .flow-node.incorrect .node-status {{
+                color: #ef4444 !important;
+            }}
+            .flow-node .node-q {{
+                font-size: 0.75rem;
+                text-transform: uppercase;
+                font-weight: 800;
+                letter-spacing: 0.1em;
+                margin-bottom: 2px;
+            }}
+            .flow-node .node-diff {{
+                font-size: 1.05rem;
+                font-weight: 800;
+                color: #ffffff !important;
+            }}
+            .flow-node .node-status {{
+                font-size: 0.8rem;
+                margin-top: 4px;
+                font-weight: 700;
+            }}
+            .flow-arrow {{
+                font-size: 1.6rem;
+                color: #00f0ff;
+                text-shadow: 0 0 8px rgba(0, 240, 255, 0.4);
+                font-family: 'Outfit', sans-serif;
+                user-select: none;
+            }}
+            </style>
+            <div class="flow-container">
+            """
+            
+            # Combine nodes and arrows
+            combined_elements = []
+            for i, node in enumerate(nodes_html):
+                combined_elements.append(node)
+                if i < len(nodes_html) - 1:
+                    combined_elements.append(arrow_html)
+            
+            flowchart_html += " ".join(combined_elements)
+            flowchart_html += "</div>"
+            st.markdown(flowchart_html, unsafe_allow_html=True)
 
         # Render stats grid (3 columns max)
         st.markdown("### 📊 Topic Performance breakdown")
@@ -651,11 +803,13 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
         current_idx = st.session_state.get("quiz_page", 0)
         q = mcqs[current_idx]
         cat = q.get("category", "General")
+        diff = st.session_state["difficulty_history"][current_idx]
+        diff_class = {"Easy": "easy", "Medium": "medium", "Hard": "hard"}.get(diff, "medium")
 
         st.markdown(f"""
         <div style="margin-bottom: -15px;">
             <div class="q-number">
-                <span>Question {current_idx+1} of {len(mcqs)} &nbsp;·&nbsp; {cat}</span>
+                <span>Question {current_idx+1} of {len(mcqs) if active_quiz_mode != "Adaptive Difficulty 🧠" else st.session_state.get("num_mcqs", 5)} &nbsp;·&nbsp; {cat}</span>
                 <span class="diff-badge diff-{diff_class}">{diff}</span>
             </div>
             <div class="q-text">{q["question"]}</div>
@@ -678,24 +832,69 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
         st.session_state["answers"][current_idx] = choice
         st.markdown("<div style='margin-bottom: 25px;'></div>", unsafe_allow_html=True)
 
-        # Navigation row
-        col_prev, col_progress, col_next = st.columns([1, 2, 1])
-        with col_prev:
-            if st.button("⬅️ Previous", disabled=(current_idx == 0), key="btn_prev"):
-                st.session_state["quiz_page"] = max(0, current_idx - 1)
-                st.rerun()
-        with col_progress:
-            # Render a clean progress line
-            st.progress((current_idx + 1) / len(mcqs))
-        with col_next:
-            if current_idx == len(mcqs) - 1:
-                if st.button("Submit Quiz ✅", key="btn_submit_quiz"):
-                    st.session_state["submitted"] = True
+        if active_quiz_mode == "Adaptive Difficulty 🧠":
+            total_qs = st.session_state.get("num_mcqs", 5)
+            
+            # Navigation row for Adaptive Mode (Submit Answer & Next)
+            col_prev, col_progress, col_next = st.columns([1, 2, 1])
+            with col_prev:
+                # Disabled in Adaptive Mode
+                st.button("⬅️ Previous", disabled=True, key="btn_prev_adaptive")
+            with col_progress:
+                st.progress((current_idx + 1) / total_qs)
+            with col_next:
+                if current_idx == total_qs - 1:
+                    if st.button("Submit & View Results ✅", key="btn_adaptive_submit"):
+                        st.session_state["answers"][current_idx] = choice
+                        st.session_state["submitted"] = True
+                        st.rerun()
+                else:
+                    if st.button("Submit & Next ➡️", key="btn_adaptive_next"):
+                        st.session_state["answers"][current_idx] = choice
+                        is_correct = (choice == q["correct"])
+                        
+                        # Adjust difficulty for next question
+                        curr_diff = st.session_state["difficulty_history"][current_idx]
+                        if is_correct:
+                            next_diff = "Medium" if curr_diff == "Easy" else "Hard"
+                        else:
+                            next_diff = "Easy" if curr_diff == "Hard" else "Easy" if curr_diff == "Medium" else "Easy"
+                        
+                        # Generate next question
+                        with st.spinner("AI is crafting the next question..."):
+                            next_q, err = generate_single_question(
+                                st.session_state["study_text"],
+                                next_diff,
+                                st.session_state["mcqs"],
+                                api_key,
+                                model_name,
+                                st.session_state["custom_focus"]
+                            )
+                            if err:
+                                st.error(f"⚠️ Error generating next question: {err}")
+                            elif next_q:
+                                st.session_state["mcqs"].append(next_q)
+                                st.session_state["difficulty_history"].append(next_diff)
+                                st.session_state["quiz_page"] = current_idx + 1
+                                st.rerun()
+        else:
+            # Navigation row for Classic Mode
+            col_prev, col_progress, col_next = st.columns([1, 2, 1])
+            with col_prev:
+                if st.button("⬅️ Previous", disabled=(current_idx == 0), key="btn_prev"):
+                    st.session_state["quiz_page"] = max(0, current_idx - 1)
                     st.rerun()
-            else:
-                if st.button("Next ➡️", key="btn_next"):
-                    st.session_state["quiz_page"] = min(len(mcqs) - 1, current_idx + 1)
-                    st.rerun()
+            with col_progress:
+                st.progress((current_idx + 1) / len(mcqs))
+            with col_next:
+                if current_idx == len(mcqs) - 1:
+                    if st.button("Submit Quiz ✅", key="btn_submit_quiz"):
+                        st.session_state["submitted"] = True
+                        st.rerun()
+                else:
+                    if st.button("Next ➡️", key="btn_next"):
+                        st.session_state["quiz_page"] = min(len(mcqs) - 1, current_idx + 1)
+                        st.rerun()
 
     else:
         # Graded Review Phase: Show all questions scrollable so they can easily read explanations
@@ -703,6 +902,9 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
             user_ans = st.session_state["answers"].get(i)
             correct_ans = q["correct"]
             cat = q.get("category", "General")
+            
+            q_diff = st.session_state["difficulty_history"][i] if "difficulty_history" in st.session_state and i < len(st.session_state["difficulty_history"]) else st.session_state.get("difficulty", "Medium")
+            q_diff_class = {"Easy": "easy", "Medium": "medium", "Hard": "hard"}.get(q_diff, "medium")
 
             # Build and display static results card
             options_html = ""
@@ -721,7 +923,7 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
             <div class="mcq-card">
                 <div class="q-number">
                     <span>Q{i+1} &nbsp;·&nbsp; {cat}</span>
-                    <span class="diff-badge diff-{diff_class}">{diff}</span>
+                    <span class="diff-badge diff-{q_diff_class}">{q_diff}</span>
                 </div>
                 <div class="q-text">{q["question"]}</div>
                 {options_html}
@@ -755,16 +957,17 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
         st.markdown("### 📥 Download Quiz Material")
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.download_button(label="📄 Markdown Notes", data=generate_markdown(mcqs), file_name="cyber_mcq_notes.md", mime="text/markdown")
+            st.download_button(label="📄 Markdown Notes", data=generate_markdown(mcqs), file_name="quizlab_mcq_notes.md", mime="text/markdown")
         with c2:
-            st.download_button(label="📦 Raw JSON", data=json.dumps(mcqs, indent=2), file_name="cyber_mcq_data.json", mime="application/json")
+            st.download_button(label="📦 Raw JSON", data=json.dumps(mcqs, indent=2), file_name="quizlab_mcq_data.json", mime="application/json")
         with c3:
-            st.download_button(label="⚡ Anki Flashcards", data=generate_anki(mcqs), file_name="cyber_mcq_anki.txt", mime="text/tab-separated-values")
+            st.download_button(label="⚡ Anki Flashcards", data=generate_anki(mcqs), file_name="quizlab_mcq_anki.txt", mime="text/tab-separated-values")
 
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("Generate New Quiz 🔄"):
             st.session_state["submitted"] = False
             st.session_state["mcqs"] = []
             st.session_state["answers"] = {}
+            st.session_state["difficulty_history"] = []
             st.session_state["quiz_page"] = 0
             st.rerun()
