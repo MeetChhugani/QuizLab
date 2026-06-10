@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 import os
+import textwrap
 from groq import Groq
 from utils import generate_markdown, generate_anki, generate_single_question
 from pdf_parser import extract_text_from_pdf
@@ -648,12 +649,12 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
         pct = int((correct_count / len(mcqs)) * 100)
         
         # Display main score box
-        st.markdown(f"""
+        st.markdown(textwrap.dedent(f"""
         <div class="score-box">
             <div class="score-number">{correct_count}/{len(mcqs)}</div>
             <div class="score-label">{pct}% Correct · {active_quiz_mode}</div>
         </div>
-        """, unsafe_allow_html=True)
+        """), unsafe_allow_html=True)
 
         # Conceptual breakdown logic
         category_stats = {}
@@ -686,17 +687,11 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
                 status_icon = "✓ Correct" if is_corr else "✗ Incorrect"
                 node_class = "correct" if is_corr else "incorrect"
                 
-                node_html = f"""
-                <div class="flow-node {node_class}">
-                    <div class="node-q">Q{idx+1}</div>
-                    <div class="node-diff">{node_diff}</div>
-                    <div class="node-status">{status_icon}</div>
-                </div>
-                """
+                node_html = f'<div class="flow-node {node_class}"><div class="node-q">Q{idx+1}</div><div class="node-diff">{node_diff}</div><div class="node-status">{status_icon}</div></div>'
                 nodes_html.append(node_html)
             
             arrow_html = '<div class="flow-arrow">➔</div>'
-            flowchart_html = f"""
+            flowchart_html = textwrap.dedent(f"""
             <style>
             .flow-container {{
                 display: flex;
@@ -765,7 +760,7 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
             }}
             </style>
             <div class="flow-container">
-            """
+            """).strip()
             
             # Combine nodes and arrows
             combined_elements = []
@@ -788,13 +783,13 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
                 with col:
                     col_pct = int((corr / tot) * 100)
                     accent = '#10b981' if col_pct >= 70 else '#f59e0b' if col_pct >= 40 else '#ef4444'
-                    st.markdown(f"""
+                    st.markdown(textwrap.dedent(f"""
                     <div style="background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); border-radius: 12px; padding: 14px; text-align: center; margin-bottom: 12px; backdrop-filter: blur(5px);">
                         <div style="font-size: 0.8rem; text-transform: uppercase; color: #94a3b8; font-weight: 700; letter-spacing: 0.05em; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">{cat}</div>
                         <div style="font-size: 1.8rem; font-weight: 800; color: {accent}; margin: 6px 0;">{col_pct}%</div>
                         <div style="font-size: 0.85rem; color: #64748b;">{corr} / {tot} correct</div>
                     </div>
-                    """, unsafe_allow_html=True)
+                    """), unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Render MCQ Cards ──────────────────────────────────────────
@@ -806,7 +801,7 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
         diff = st.session_state["difficulty_history"][current_idx]
         diff_class = {"Easy": "easy", "Medium": "medium", "Hard": "hard"}.get(diff, "medium")
 
-        st.markdown(f"""
+        st.markdown(textwrap.dedent(f"""
         <div style="margin-bottom: -15px;">
             <div class="q-number">
                 <span>Question {current_idx+1} of {len(mcqs) if active_quiz_mode != "Adaptive Difficulty 🧠" else st.session_state.get("num_mcqs", 5)} &nbsp;·&nbsp; {cat}</span>
@@ -814,7 +809,7 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
             </div>
             <div class="q-text">{q["question"]}</div>
         </div>
-        """, unsafe_allow_html=True)
+        """), unsafe_allow_html=True)
 
         # Restore saved radio choice index if answered
         saved_ans = st.session_state["answers"].get(current_idx)
@@ -919,7 +914,7 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
                     badge = " (Your Choice)"
                 options_html += f'<div class="{css_class}"><b>{key}.</b> {val}{badge}</div>'
 
-            st.markdown(f"""
+            st.markdown(textwrap.dedent(f"""
             <div class="mcq-card">
                 <div class="q-number">
                     <span>Q{i+1} &nbsp;·&nbsp; {cat}</span>
@@ -929,7 +924,7 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
                 {options_html}
                 <div class="explanation">💡 <b>Explanation:</b> {q["explanation"]}</div>
             </div>
-            """, unsafe_allow_html=True)
+            """), unsafe_allow_html=True)
 
         st.markdown("---")
         
@@ -940,7 +935,7 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
             for index, q, user_ans in missed_questions:
                 user_label = f"{user_ans}. {q['options'].get(user_ans, 'Unanswered')}"
                 corr_label = f"{q['correct']}. {q['options'].get(q['correct'], '')}"
-                st.markdown(f"""
+                st.markdown(textwrap.dedent(f"""
                 <div style="background: rgba(239, 68, 68, 0.04); border: 1px solid rgba(239, 68, 68, 0.12); border-radius: 12px; padding: 16px; margin-bottom: 14px;">
                     <div style="font-weight: 700; color: #ef4444; font-size: 0.8rem; text-transform: uppercase; margin-bottom: 6px;">Q{index+1} Review · {q.get('category', 'General')}</div>
                     <div style="font-weight: 600; color: #ffffff; margin-bottom: 8px; font-size: 1.05rem;">{q['question']}</div>
@@ -950,7 +945,7 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
                     </div>
                     <div class="explanation" style="margin-top:12px;">💡 <b>Key Concept:</b> {q['explanation']}</div>
                 </div>
-                """, unsafe_allow_html=True)
+                """), unsafe_allow_html=True)
             st.markdown("<br>", unsafe_allow_html=True)
 
         # Export Suite Downloader Buttons
