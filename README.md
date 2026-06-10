@@ -9,11 +9,14 @@ Built with **Streamlit** and heavily customized with a **cyberpunk glassmorphic 
 ## ✨ Key Features
 
 * **🎨 Cyberpunk Glassmorphic UI**: Sleek dark theme featuring radial gradients, neon glows, custom typography, and responsive hover transitions.
+* **🧠 Adaptive Difficulty Engine**: Tracks user accuracy in real-time. Correct answers trigger a difficulty level increase (Easy $\to$ Medium $\to$ Hard) for the subsequent question, while incorrect answers decrease the level.
+* **🔒 Navigation & Input Locking**: Prevents cheating or retroactive editing by disabling the "Previous" button and hiding the question-jump keypad in the sidebar during Adaptive mode.
+* **🗺️ Visual Pathway Flowchart**: Renders a stunning horizontal HTML flow timeline at the scoreboard page displaying the exact node-by-node path the user took, showing question numbers, difficulty levels, and correct (`✓` green) vs incorrect (`✗` red) outcomes.
 * **📄 Dual Input Modes**: Upload any digital PDF or simply copy-paste plain text (notes, articles, slides) directly into the generator.
 * **🧭 Step-by-Step Quiz Pagination**: Display one question card at a time for distraction-free testing, complete with smart state preservation when navigating back and forth.
-* **🎯 Interactive Navigation Deck**: A sidebar progress tracker featuring a clickable numerical keypad (`Q1`, `Q2 ✓`, etc.) showing your completion status and letting you jump to any question instantly.
+* **🎯 Interactive Navigation Deck**: A sidebar progress tracker featuring a clickable numerical keypad (`Q1`, `Q2 ✓`, etc.) showing your completion status and letting you jump to any question instantly (Classic Mode only).
 * **⚙️ Robust Extraction Fallback**: A dual-parser pipeline that attempts parsing using `PyMuPDF` (`fitz`) first, falling back automatically to `pdfplumber` for maximum text recovery.
-* **📊 Conceptual Breakdown Grid**: After submission, view your quiz score alongside an analytics breakdown showing your accuracy percentage in each sub-topic tested.
+* **📊 Conceptual Breakdown Grid**: After submission, view your quiz score alongside an analytics breakdown showing your accuracy percentage in each specific concept category tested.
 * **🔍 Recommended Review Session**: Missed questions are consolidated into a review deck showing your choice, the correct answer, and detailed AI explanations.
 * **📥 Multi-Format Export Center**: Download your study materials instantly:
   * **Markdown Study Notes**: A formatted study sheet.
@@ -47,7 +50,7 @@ Built with **Streamlit** and heavily customized with a **cyberpunk glassmorphic 
 
 2. **Install dependencies**:
    ```bash
-   pip install -r Mcq_requirements.txt
+   pip install -r requirements.txt
    ```
 
 3. **Configure your API Key**:
