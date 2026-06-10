@@ -610,6 +610,7 @@ if "mcqs" in st.session_state and st.session_state["mcqs"]:
             diff_class = {"Easy": "easy", "Medium": "medium", "Hard": "hard"}.get(curr_diff, "medium")
             st.sidebar.markdown(f"Current Level: <span class='diff-badge diff-{diff_class}'>{curr_diff}</span>", unsafe_allow_html=True)
             st.sidebar.markdown("*(Difficulty updates dynamically based on correctness)*")
+            st.sidebar.info("Previous is disabled in Adaptive mode — each question is generated based on your last answer.")
         else:
             total_qs = len(mcqs)
             answered = sum(1 for i in range(total_qs) if st.session_state["answers"].get(i) is not None)
