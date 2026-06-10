@@ -2,8 +2,8 @@ import streamlit as st
 import json
 import os
 from groq import Groq
-import fitz  # pymupdf
-import pdfplumber
+from utils import generate_markdown, generate_anki
+from pdf_parser import extract_text_from_pdf
 
 st.set_page_config(page_title="QuizLab - PDF & Text MCQ Generator", page_icon="🧠", layout="centered")
 
@@ -435,69 +435,18 @@ if "📄 Upload PDF Document" in input_method:
 else:
     pasted_text = st.text_area("Paste text content here...", height=250, placeholder="Paste articles, study guides, notes, or essays...")
 
-# ── Export Generator Utilities ────────────────────────────────────
-def generate_markdown(mcqs):
-    md = "# Generated MCQ Quiz\n\n"
-    for i, q in enumerate(mcqs):
-        md += f"### Q{i+1}. {q['question']}\n"
-        if 'category' in q:
-            md += f"*Category: {q['category']}*\n\n"
-        for k, v in q['options'].items():
-            md += f"- [{k}] {v}\n"
-        md += f"\n**Correct Answer: {q['correct']}**\n\n"
-        md += f"*Explanation: {q['explanation']}*\n\n"
-        md += "---\n\n"
-    return md
-
-def generate_anki(mcqs):
-    anki = ""
-    for q in mcqs:
-        front = f"<b>{q['question']}</b><br><br>"
-        options_list = [f"{k}. {v}" for k, v in q['options'].items()]
-        front += "<br>".join(options_list)
-        
-        back = f"Correct Answer: <b>{q['correct']}</b><br><br>Explanation: {q['explanation']}"
-        if 'category' in q:
-            back += f"<br><br><i>Category: {q['category']}</i>"
-        
-        # Anki TSV uses tab as separator; strip tab characters and replace carriage returns with HTML tags
-        front_clean = front.replace("\t", " ").replace("\n", "<br>")
-        back_clean = back.replace("\t", " ").replace("\n", "<br>")
-        anki += f"{front_clean}\t{back_clean}\n"
-    return anki
-
 # ── Main Generation Trigger ───────────────────────────────────────
-if st.button("Generate Cyber MCQs ⚡"):
+if st.button("Generate Quiz ⚡"):
     if "📄 Upload PDF Document" in input_method and not uploaded_file:
         st.error("⚠️ Please upload a PDF document first.")
     elif "✍️ Paste Text Content" in input_method and not pasted_text.strip():
         st.error("⚠️ Please paste some study text first.")
     else:
         text = ""
+        error_logs = []
         if "📄 Upload PDF Document" in input_method:
             with st.spinner("Extracting text from PDF..."):
-                # Try PyMuPDF (fitz) first
-                try:
-                    uploaded_file.seek(0)
-                    doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-                    for page in doc:
-                        text += page.get_text() + "\n"
-                except Exception as e:
-                    pass
-
-                # If PyMuPDF fails or extracts insufficient text, try pdfplumber as a fallback
-                if len(text.strip()) < 100:
-                    try:
-                        uploaded_file.seek(0)
-                        with pdfplumber.open(uploaded_file) as pdf:
-                            text = ""
-                            for page in pdf.pages:
-                                page_text = page.extract_text()
-                                if page_text:
-                                    text += page_text + "\n"
-                    except Exception as e:
-                        pass
-
+                text, error_logs = extract_text_from_pdf(uploaded_file)
         else:
             text = pasted_text
 
@@ -513,10 +462,18 @@ if st.button("Generate Cyber MCQs ⚡"):
             * Try uploading a **digitally created PDF** (e.g., exported directly from Google Docs, Word, or Canva).
             * Copy the text from your document manually and use the **✍️ Paste Text Content** tab above to generate your MCQs!
             """)
+            
+            if error_logs:
+                with st.expander("🛠️ View Technical Parser Logs"):
+                    for log in error_logs:
+                        st.code(log, language="text")
+            
             st.stop()
 
-        # Keep content within reasonable limit to avoid context overflow
-        text = text[:8000]
+        # Handle Truncation and show warning if needed
+        if len(text) > 8000:
+            st.warning("⚠️ The document is very long. Only the first ~8,000 characters were used to generate questions to keep within AI limits.")
+            text = text[:8000]
 
         focus_instruction = f"- Questions should focus specifically on: '{custom_focus}'." if custom_focus.strip() else ""
 
