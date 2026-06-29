@@ -5,3 +5,8 @@ __pycache__/
 .venv
 venv/
 .streamlit/secrets.toml
+
+# Local QuizLab AI files
+.quizlab_cache/
+groq_error_debug.log
+quiz_history.json

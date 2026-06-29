@@ -40,3 +40,22 @@ def extract_text_from_pdf(uploaded_file):
             error_logs.append(f"pdfplumber Fallback Exception: {e}\n{tb}")
 
     return text, error_logs
+
+def extract_text_from_file(uploaded_file):
+    """
+    Extracts text from an uploaded file (PDF, TXT, or MD).
+    Returns (extracted_text, error_logs).
+    """
+    name = getattr(uploaded_file, "name", "").lower()
+    if name.endswith((".txt", ".md")):
+        try:
+            uploaded_file.seek(0)
+            content = uploaded_file.read()
+            if isinstance(content, bytes):
+                content = content.decode("utf-8", errors="ignore")
+            return content, []
+        except Exception as e:
+            tb = traceback.format_exc()
+            return "", [f"Text/Markdown extraction exception: {e}\n{tb}"]
+    else:
+        return extract_text_from_pdf(uploaded_file)
