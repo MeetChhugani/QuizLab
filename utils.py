@@ -1,6 +1,7 @@
 import json
 import re
-from groq import Groq
+from services.llm import DEFAULT_HF_MODEL, get_llm_provider
+
 
 def _pre_clean_json_text(s):
     """
@@ -9,10 +10,9 @@ def _pre_clean_json_text(s):
     """
     if not s:
         return s
-    # Match numbered prefixes (e.g. 1. ") or bullet prefixes (e.g. - " or * ")
-    # before a string value and replace with just the quote.
     cleaned = re.sub(r'(\d+\.\s*|[-*]\s*)(")', r'\2', s)
     return cleaned
+
 
 def _repair_json(s):
     """
@@ -44,15 +44,12 @@ def _repair_json(s):
                 if open_chars:
                     open_chars.pop()
                     
-    # If we are inside an unclosed string at the end of truncation, close the string
     if in_string:
         s += '"'
         
-    # Strip trailing commas, colons, or whitespace that make it invalid before appending brackets/braces
     while s and s[-1] in (',', ':', ' ', '\n', '\r', '\t'):
         s = s[:-1]
         
-    # Close any unclosed braces/brackets in reverse order
     while open_chars:
         c = open_chars.pop()
         if c == '{':
@@ -62,12 +59,12 @@ def _repair_json(s):
             
     return s
 
+
 def _clean_and_parse_json(raw_text):
     """
     Cleans markdown code blocks and attempts to parse valid JSON from text.
     Uses pre-cleaning regex and fallback active JSON repair if truncated.
     """
-    # Pre-clean list numbers/bullets
     raw = _pre_clean_json_text(raw_text).strip()
     
     if "```" in raw:
@@ -87,13 +84,11 @@ def _clean_and_parse_json(raw_text):
     try:
         return json.loads(raw)
     except Exception as e:
-        # Try repairing raw
         try:
             return json.loads(_repair_json(raw))
         except Exception:
             pass
 
-        # Fallback: locate matching outer brackets
         first_curly = raw.find("{")
         first_bracket = raw.find("[")
         
@@ -126,23 +121,22 @@ def _clean_and_parse_json(raw_text):
                 except Exception:
                     pass
                     
-            # Try to repair a truncated substring that lacks closing characters
             try:
                 truncated_substring = raw[start_idx:]
                 return json.loads(_repair_json(truncated_substring))
             except Exception:
                 pass
         
-        # Log raw response for diagnostic purposes
         try:
             import os
-            log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "groq_error_debug.log")
+            log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llm_error_debug.log")
             with open(log_path, "w", encoding="utf-8") as f:
                 f.write(f"Exception: {str(e)}\n\nRaw Text:\n{raw_text}")
         except Exception:
             pass
             
         raise e
+
 
 def generate_markdown(mcqs):
     md = "# Generated MCQ Quiz\n\n"
@@ -157,6 +151,7 @@ def generate_markdown(mcqs):
         md += "---\n\n"
     return md
 
+
 def generate_anki(mcqs):
     anki = ""
     for q in mcqs:
@@ -168,13 +163,13 @@ def generate_anki(mcqs):
         if 'category' in q:
             back += f"<br><br><i>Category: {q['category']}</i>"
         
-        # Anki TSV uses tab as separator; strip tab characters and replace carriage returns with HTML tags
         front_clean = front.replace("\t", " ").replace("\n", "<br>")
         back_clean = back.replace("\t", " ").replace("\n", "<br>")
         anki += f"{front_clean}\t{back_clean}\n"
     return anki
 
-def generate_single_question(text, difficulty, prev_questions, api_key, model_name, custom_focus):
+
+def generate_single_question(text, difficulty, prev_questions, api_key, model_name=DEFAULT_HF_MODEL, custom_focus=""):
     """
     Generates a single MCQ from the text context, avoiding duplicates in prev_questions.
     Returns (question_dict, error_message).
@@ -222,17 +217,14 @@ TEXT:
 {text}"""
 
     try:
-        client = Groq(api_key=api_key)
-        response = client.chat.completions.create(
-            model=model_name,
+        provider = get_llm_provider(token=api_key, default_model=model_name)
+        raw = provider.generate(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.45,
-            max_tokens=1000
+            max_tokens=1000,
         )
-        raw = response.choices[0].message.content.strip()
         q_dict = _clean_and_parse_json(raw)
         
-        # Validate structure
         required_keys = ["question", "options", "correct", "explanation"]
         if not all(k in q_dict for k in required_keys) or len(q_dict["options"]) != 4:
             raise ValueError("JSON response structure is incomplete or invalid.")
@@ -241,7 +233,8 @@ TEXT:
     except Exception as e:
         return None, str(e)
 
-def generate_learning_material(text, custom_focus, api_key, model_name, temperature=0.35, seed=0):
+
+def generate_learning_material(text, custom_focus, api_key, model_name=DEFAULT_HF_MODEL, temperature=0.35, seed=0):
     """
     Executes API Call 1: Combined analysis, question pool (Easy, Medium, Hard), and flashcards.
     Returns (material_dict, error_message).
@@ -307,17 +300,14 @@ JSON output structure:
 }}"""
 
     try:
-        client = Groq(api_key=api_key)
-        response = client.chat.completions.create(
-            model=model_name,
+        provider = get_llm_provider(token=api_key, default_model=model_name)
+        raw = provider.generate(
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
-            max_tokens=4096
+            max_tokens=4096,
         )
-        raw = response.choices[0].message.content.strip()
         data = _clean_and_parse_json(raw)
         
-        # Validations
         if "analysis" not in data or "questions" not in data or "flashcards" not in data:
             raise ValueError("Missing critical fields in combined generation response.")
             
@@ -325,7 +315,8 @@ JSON output structure:
     except Exception as e:
         return None, str(e)
 
-def get_tutor_explanation(question, options, correct, selected, api_key, model_name):
+
+def get_tutor_explanation(question, options, correct, selected, api_key, model_name=DEFAULT_HF_MODEL):
     """
     On-Demand API Call: Generates an AI tutor explanation for a specific question based on user response.
     Returns (explanation_dict, error_message).
@@ -351,14 +342,12 @@ Please generate the tutoring explanation as a JSON object containing the followi
 Return ONLY a valid JSON object matching this structure."""
 
     try:
-        client = Groq(api_key=api_key)
-        response = client.chat.completions.create(
-            model=model_name,
+        provider = get_llm_provider(token=api_key, default_model=model_name)
+        raw = provider.generate(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.45,
-            max_tokens=1000
+            max_tokens=1000,
         )
-        raw = response.choices[0].message.content.strip()
         data = _clean_and_parse_json(raw)
         
         required = ["why_correct", "why_incorrect", "simple_explanation", "analogy", "memory_trick"]
@@ -369,7 +358,8 @@ Return ONLY a valid JSON object matching this structure."""
     except Exception as e:
         return None, str(e)
 
-def generate_learning_report(quiz_statistics, api_key, model_name):
+
+def generate_learning_report(quiz_statistics, api_key, model_name=DEFAULT_HF_MODEL):
     """
     API Call 2: Generate personalized learning report.
     Returns (report_dict, error_message).
@@ -394,14 +384,12 @@ Return ONLY a valid JSON object matching this structure.
 IMPORTANT: Do NOT include list numbers or bullet prefixes (like 1., 2., -, *) inside your JSON array values or keys. The JSON arrays must contain raw, plain string elements only. (Example: "study_plan": ["Item A", "Item B"] and NOT "study_plan": [1. "Item A", 2. "Item B"])."""
 
     try:
-        client = Groq(api_key=api_key)
-        response = client.chat.completions.create(
-            model=model_name,
+        provider = get_llm_provider(token=api_key, default_model=model_name)
+        raw = provider.generate(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.4,
-            max_tokens=4096
+            max_tokens=4096,
         )
-        raw = response.choices[0].message.content.strip()
         data = _clean_and_parse_json(raw)
         
         required = ["overall_skill_level", "strong_topics", "weak_topics", "learning_summary", 

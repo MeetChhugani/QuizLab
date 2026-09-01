@@ -1,4 +1,12 @@
 streamlit
-groq
+python-dotenv
+huggingface-hub
+openai
 pymupdf
 pdfplumber
+chromadb
+sentence-transformers
+pytest
+numpy
+pytesseract
+Pillow

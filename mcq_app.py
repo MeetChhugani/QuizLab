@@ -1,6 +1,8 @@
 import streamlit as st
 import json
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import time
 import textwrap
 import pandas as pd
@@ -23,8 +25,12 @@ from utils import (
     get_tutor_explanation,
     generate_learning_report
 )
-from pdf_parser import extract_text_from_file
+from pdf_parser import extract_text_from_file, extract_pages_from_file
 from cache_manager import get_cached_material, set_cached_material
+from rag.ingestion import IngestionError, compute_content_hash, ingest_document
+from rag.pipeline import get_session_id, rag_generate_learning_material
+from components.chat import render_chat_view
+import uuid
 
 # Set Page Config
 st.set_page_config(
@@ -779,6 +785,16 @@ if "question_start_time" not in st.session_state:
     st.session_state["question_start_time"] = None
 if "used_questions_indices" not in st.session_state:
     st.session_state["used_questions_indices"] = []
+if "rag_document_id" not in st.session_state:
+    st.session_state["rag_document_id"] = None
+if "rag_document_name" not in st.session_state:
+    st.session_state["rag_document_name"] = None
+if "rag_session_id" not in st.session_state:
+    st.session_state["rag_session_id"] = str(uuid.uuid4())[:12]
+if "rag_chat_history" not in st.session_state:
+    st.session_state["rag_chat_history"] = []
+if "upload_pages" not in st.session_state:
+    st.session_state["upload_pages"] = None
 
 
 # ── Title & Header ────────────────────────────────────────────────
@@ -786,19 +802,23 @@ st.markdown('<p class="hero-title">QuizLab AI</p>', unsafe_allow_html=True)
 st.markdown('<p class="hero-sub">Transform any study material into an AI-powered learning experience with intelligent quiz generation, adaptive assessment, and personalized insights.</p>', unsafe_allow_html=True)
 
 # ── Sidebar Settings & Configurations ─────────────────────────────
-api_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
-if not api_key:
-    api_key = st.sidebar.text_input("Enter Groq API Key", type="password", help="Enter your Groq cloud console API Key.")
+api_key = st.secrets.get("HF_TOKEN", os.environ.get("HF_TOKEN", ""))
     
 # Hardcode model backend
-model_name = "llama-3.3-70b-versatile"
+model_name = os.environ.get("HF_MODEL", "meta-llama/Llama-3.3-70B-Instruct")
 
 st.sidebar.markdown("---")
+st.sidebar.markdown("### 🔍 RAG Settings")
+use_rag = st.sidebar.checkbox(
+    "Enable RAG (Retrieval-Augmented Generation)",
+    value=True,
+    help="Index uploaded material into a vector database for grounded chat, quiz, and flashcard generation.",
+)
 st.sidebar.markdown("### 💾 Caching Policy")
 use_cache = st.sidebar.checkbox(
     "Use Local Cache", 
     value=True, 
-    help="Enable to load previously analyzed material instantly to save Groq API credits. Disable to force a new, randomized question generation session."
+    help="Enable to load previously analyzed material instantly to save Hugging Face API credits. Disable to force a new, randomized question generation session."
 )
 
 # Render Sidebar navigation controls if study pack is ready
@@ -819,6 +839,10 @@ if st.session_state["material_data"] is not None:
         st.session_state["flashcard_idx"] = 0
         st.session_state["flashcard_flipped"] = False
         st.rerun()
+
+    if st.session_state.get("rag_document_id") and st.sidebar.button("💬 Chat With Material", key="sidebar_nav_chat"):
+        st.session_state["active_view"] = "rag_chat"
+        st.rerun()
         
     st.sidebar.markdown("---")
     if st.sidebar.button("🔄 Upload New Material", key="sidebar_nav_reset"):
@@ -835,6 +859,10 @@ if st.session_state["material_data"] is not None:
         st.session_state["question_times"] = {}
         st.session_state["question_start_time"] = None
         st.session_state["used_questions_indices"] = []
+        st.session_state["rag_document_id"] = None
+        st.session_state["rag_document_name"] = None
+        st.session_state["rag_chat_history"] = []
+        st.session_state["upload_pages"] = None
         st.rerun()
 
 
@@ -854,18 +882,18 @@ def build_loading_html(steps, active_idx):
     html += "</div>"
     return html
 
-def load_and_analyze_material(text, custom_focus, api_key, model_name, use_cache=True):
+def load_and_analyze_material(text, custom_focus, api_key, model_name, use_cache=True, use_rag=True, document_id=None, session_id="default"):
     status_placeholder = st.empty()
     
-    # Check cache
+    # Check cache (only for non-RAG or when document not indexed)
     cached = None
-    if use_cache:
+    if use_cache and not use_rag:
         cached = get_cached_material(text, custom_focus)
     is_cached = (cached is not None)
     
     pipeline_steps = [
         ("Reading Study Material...", "📂"),
-        ("Understanding Concepts & Analysis...", "🧠"),
+        ("Indexing & Chunking (RAG)...", "🔍") if use_rag else ("Understanding Concepts & Analysis...", "🧠"),
         ("Generating Quiz Questions Pool...", "🎯"),
         ("Building Flashcards & Learning Pack...", "⚡"),
         ("Ready!", "🚀")
@@ -876,10 +904,10 @@ def load_and_analyze_material(text, custom_focus, api_key, model_name, use_cache
     status_placeholder.markdown(html, unsafe_allow_html=True)
     time.sleep(0.3 if is_cached else 0.8)
     
-    # Step 1: Understanding
+    # Step 1: Indexing / Understanding
     html = build_loading_html(pipeline_steps, 1)
     status_placeholder.markdown(html, unsafe_allow_html=True)
-    time.sleep(0.3 if is_cached else 1.0)
+    time.sleep(0.3 if is_cached else 0.8)
     
     if is_cached:
         # Fast-track steps for cached data
@@ -894,10 +922,24 @@ def load_and_analyze_material(text, custom_focus, api_key, model_name, use_cache
         html = build_loading_html(pipeline_steps, 2)
         status_placeholder.markdown(html, unsafe_allow_html=True)
         
-        # Call API 1
         temp = 0.35 if use_cache else 0.75
         seed = 0 if use_cache else int(time.time())
-        material, err = generate_learning_material(text, custom_focus, api_key, model_name, temp, seed)
+
+        if use_rag and document_id:
+            retrieval_query = custom_focus.strip() or "key concepts definitions and important topics"
+            material, err = rag_generate_learning_material(
+                retrieval_query=retrieval_query,
+                custom_focus=custom_focus,
+                api_key=api_key,
+                model_name=model_name,
+                session_id=session_id,
+                document_id=document_id,
+                temperature=temp,
+                seed=seed,
+            )
+        else:
+            material, err = generate_learning_material(text, custom_focus, api_key, model_name, temp, seed)
+
         if err:
             status_placeholder.empty()
             return None, err
@@ -912,8 +954,9 @@ def load_and_analyze_material(text, custom_focus, api_key, model_name, use_cache
         status_placeholder.markdown(html, unsafe_allow_html=True)
         time.sleep(0.5)
         
-        # Cache results locally
-        set_cached_material(text, custom_focus, material)
+        # Cache results locally (legacy cache for non-RAG fallback)
+        if not use_rag:
+            set_cached_material(text, custom_focus, material)
         
         status_placeholder.empty()
         return material, None
@@ -932,7 +975,8 @@ if st.session_state["active_view"] == "setup":
       <div class="badge-item">📄 Intelligent PDF Analysis</div>
       <div class="badge-item">🎯 Adaptive Learning</div>
       <div class="badge-item">📊 Learning Analytics</div>
-      <div class="badge-item">💬 AI Tutor</div>
+      <div class="badge-item">💬 RAG Chat</div>
+      <div class="badge-item">🔍 Grounded Retrieval</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1002,15 +1046,26 @@ if st.session_state["active_view"] == "setup":
             st.error("⚠️ Please upload a study document first.")
         elif "✍️ Paste Text Content" in input_method and not pasted_text.strip():
             st.error("⚠️ Please paste some study text first.")
-        elif not api_key:
-            st.error("⚠️ Groq API Key is required. Please input your key in the sidebar.")
         else:
             text = ""
+            pages = []
             error_logs = []
+            doc_name = "Pasted Text Session"
+            content_bytes = b""
+
             if "📄 Upload Study Material" in input_method:
-                text, error_logs = extract_text_from_file(uploaded_file)
+                doc_name = uploaded_file.name
+                uploaded_file.seek(0)
+                content_bytes = uploaded_file.read()
+                uploaded_file.seek(0)
+                pages, error_logs = extract_pages_from_file(uploaded_file)
+                text = "\n".join(p.get("text", "") for p in pages)
+                if not text:
+                    text, error_logs = extract_text_from_file(uploaded_file)
             else:
                 text = pasted_text
+                pages = [{"page_number": 1, "text": text, "chapter": ""}]
+                content_bytes = text.encode("utf-8", errors="ignore")
 
             if len(text.strip()) < 100:
                 st.error("### ⚠️ Text Extraction Failed or Content Too Short\nWe couldn't extract readable text. Ensure the document is readable (not scanned) or copy-paste the text directly.")
@@ -1019,17 +1074,50 @@ if st.session_state["active_view"] == "setup":
                         for log in error_logs:
                             st.code(log)
                 st.stop()
-                
-            # Limit length to keep in API limits
-            if len(text) > 9000:
-                st.warning("⚠️ Study material is very long. The first ~9,000 characters were parsed to fit educational context limits.")
-                text = text[:9000]
-                
-            # Run combined analysis, quiz pool generation, flashcards
-            material_data, err = load_and_analyze_material(text, custom_focus, api_key, model_name, use_cache)
+
+            session_id = st.session_state["rag_session_id"]
+            document_id = None
+
+            # RAG indexing pipeline
+            if use_rag:
+                with st.spinner("🔍 Indexing study material for RAG..."):
+                    try:
+                        content_hash = compute_content_hash(content_bytes if content_bytes else text)
+                        ingest_result = ingest_document(
+                            pages=pages if pages else None,
+                            text=text if not pages else None,
+                            document_name=doc_name,
+                            content_hash=content_hash,
+                            session_id=session_id,
+                        )
+                        document_id = ingest_result["document_id"]
+                        st.session_state["rag_document_id"] = document_id
+                        st.session_state["rag_document_name"] = doc_name
+                        st.session_state["upload_pages"] = pages
+
+                        if ingest_result.get("status") == "already_indexed":
+                            st.info(f"📚 Document already indexed ({ingest_result.get('chunk_count', 0)} chunks). Skipping duplicate ingestion.")
+                        else:
+                            st.success(f"✅ Indexed {ingest_result.get('chunks_added', 0)} chunks for retrieval.")
+                    except IngestionError as e:
+                        st.error(f"⚠️ RAG Indexing Error: {e}")
+                        st.stop()
+                    except Exception:
+                        st.warning("⚠️ RAG indexing is temporarily unavailable. Continuing with standard generation.")
+                        use_rag = False
+            else:
+                # Legacy truncation for non-RAG mode
+                if len(text) > 9000:
+                    st.warning("⚠️ Study material is very long. The first ~9,000 characters were parsed to fit educational context limits.")
+                    text = text[:9000]
+
+            material_data, err = load_and_analyze_material(
+                text, custom_focus, api_key, model_name, use_cache,
+                use_rag=use_rag, document_id=document_id, session_id=session_id,
+            )
             
             if err:
-                st.error(f"⚠️ Groq API Error: {err}")
+                st.error(f"⚠️ Hugging Face API Error: {err}")
             elif material_data:
                 # Save session variables
                 st.session_state["material_data"] = material_data
@@ -1037,7 +1125,7 @@ if st.session_state["active_view"] == "setup":
                 st.session_state["num_mcqs"] = num_mcqs
                 st.session_state["custom_focus"] = custom_focus
                 st.session_state["starting_difficulty"] = starting_difficulty
-                st.session_state["quiz_title"] = getattr(uploaded_file, "name", "Pasted Text Session") if uploaded_file else "Pasted Text Session"
+                st.session_state["quiz_title"] = doc_name
                 
                 # Switch view
                 st.session_state["active_view"] = "extracted_knowledge"
@@ -1094,11 +1182,20 @@ elif st.session_state["active_view"] == "extracted_knowledge":
             st.markdown(f"✅ *{obj}*")
             
     st.markdown("<br><hr style='border-color: rgba(255,255,255,0.08)'><br>", unsafe_allow_html=True)
-    
+
+    if material.get("_rag_sources"):
+        st.markdown("### 📚 RAG Source Coverage")
+        st.caption("Quiz and flashcards were generated from these retrieved document sections:")
+        for src in material["_rag_sources"][:8]:
+            parts = [src.get("document_name", "Document")]
+            if src.get("page_number"):
+                parts.append(f"Page {src['page_number']}")
+            st.markdown(f"• {' — '.join(parts)}")
+
     st.markdown("### ⚡ Interactive Learning Exercises")
     st.markdown("Select a learning activity below:")
     
-    col_act1, col_act2, col_act3 = st.columns(3)
+    col_act1, col_act2, col_act3, col_act4 = st.columns(4)
     
     with col_act1:
         st.markdown("<div style='text-align:center;'>", unsafe_allow_html=True)
@@ -1159,6 +1256,14 @@ elif st.session_state["active_view"] == "extracted_knowledge":
         if st.button("📊 Analytics Dashboard", key="act_dash"):
             st.session_state["active_view"] = "dashboard"
             st.rerun()
+
+    with col_act4:
+        if st.session_state.get("rag_document_id"):
+            if st.button("💬 Chat With Material", key="act_chat"):
+                st.session_state["active_view"] = "rag_chat"
+                st.rerun()
+        else:
+            st.button("💬 Chat With Material", key="act_chat_disabled", disabled=True, help="Enable RAG and upload material first.")
 
 # ==================================================================
 # SCREEN 3: Quiz Interface (Classic & Adaptive + Graded Report)
@@ -1698,11 +1803,29 @@ elif st.session_state["active_view"] == "flashcards":
         st.rerun()
 
 # ==================================================================
-# SCREEN 5: Local Analytics Dashboard View
+# SCREEN 5: RAG Chat View
+# ==================================================================
+elif st.session_state["active_view"] == "rag_chat":
+    if not st.session_state.get("rag_document_id"):
+        st.warning("No indexed document found. Upload study material with RAG enabled first.")
+        if st.button("🏠 Back to Setup", key="chat_no_doc_back"):
+            st.session_state["active_view"] = "setup"
+            st.rerun()
+    else:
+        render_chat_view(
+            api_key=api_key,
+            model_name=model_name,
+            session_id=st.session_state["rag_session_id"],
+            document_id=st.session_state["rag_document_id"],
+            document_name=st.session_state.get("rag_document_name") or "Study Material",
+        )
+
+# ==================================================================
+# SCREEN 6: Local Analytics Dashboard View
 # ==================================================================
 elif st.session_state["active_view"] == "dashboard":
     st.markdown("## 📊 Personal Learning Analytics Dashboard")
-    st.markdown("This dashboard tracks your performance metrics locally without hitting the Groq API.")
+    st.markdown("This dashboard tracks your performance metrics locally without hitting the Hugging Face API.")
     
     history = get_quiz_history()
     

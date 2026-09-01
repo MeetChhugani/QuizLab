@@ -8,5 +8,7 @@ venv/
 
 # Local QuizLab AI files
 .quizlab_cache/
-groq_error_debug.log
+data/chroma_db/
+data/ingestion_registry.json
+llm_error_debug.log
 quiz_history.json

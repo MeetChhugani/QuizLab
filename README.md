@@ -1,8 +1,43 @@
-# 🧠 QuizLab
+# 🧠 QuizLab AI
 
-**QuizLab** is a premium, high-fidelity AI-powered MCQ Generator that extracts study material from PDFs or plain text and crafts customized, exam-ready multiple-choice questions instantly using the ultra-fast **Groq API** (powered by `llama-3.3-70b-versatile`). 
+**QuizLab AI** is a premium, high-fidelity AI-powered MCQ Generator that extracts study material from PDFs or plain text and crafts customized, exam-ready multiple-choice questions instantly using **Hugging Face Inference Providers** (powered by `meta-llama/Llama-3.3-70B-Instruct`).
 
 Built with **Streamlit** and heavily customized with a **cyberpunk glassmorphic design system**, QuizLab offers a state-of-the-art interactive study experience.
+
+## RAG architecture
+
+QuizLab retains its existing Streamlit quiz, flashcard, adaptive assessment, and
+Hugging Face LLM provider workflows. When RAG is enabled, uploaded PDF/TXT/MD content follows this
+path before quiz, flashcard, or chat generation:
+
+```text
+upload → PyMuPDF/pdfplumber extraction → optional local OCR → clean, page-aware
+chunking → local Sentence Transformers embeddings → persistent ChromaDB →
+top-K retrieval → grounded Hugging Face LLM prompt → response with sources
+```
+
+The RAG implementation is isolated in `rag/`, and the Streamlit chat UI is in
+`components/chat.py`. The LLM interactions use a provider abstraction architecture under `services/llm/`.
+Chroma data persists under `data/chroma_db`; a unique Streamlit session id scopes each active browser session.
+
+### Configuration and use
+
+Set `HF_TOKEN` in the environment or Streamlit secrets. Override the
+model with `HF_MODEL` (default: `meta-llama/Llama-3.3-70B-Instruct`).
+Browse available models at [huggingface.co/models](https://huggingface.co/models).
+
+RAG tuning values: `RAG_CHUNK_SIZE` (800), `RAG_CHUNK_OVERLAP` (100),
+`RAG_TOP_K` (5), `RAG_MAX_CONTEXT_CHARS` (6000), `RAG_EMBEDDING_MODEL`
+(`sentence-transformers/all-MiniLM-L6-v2`), `RAG_EMBEDDING_BATCH_SIZE` (32).
+
+OCR is optional: install the system Tesseract binary to index image-only PDFs.
+The first embedding-backed run downloads the configured local model.
+
+```bash
+pip install -r requirements.txt
+streamlit run mcq_app.py
+pytest -q
+```
 
 ---
 
@@ -28,7 +63,7 @@ Built with **Streamlit** and heavily customized with a **cyberpunk glassmorphic 
 ## 🛠️ Technology Stack
 
 * **Frontend Framework**: [Streamlit](https://streamlit.io/)
-* **AI Model Engine**: [Groq Cloud API](https://console.groq.com/) (LLaMA 3.3 70B model backend)
+* **AI Model Engine**: [Hugging Face Inference Providers](https://huggingface.co/) (LLaMA 3.3 70B Instruct — free tier)
 * **Document Parsing**: [PyMuPDF](https://pymupdf.readthedocs.io/) & [pdfplumber](https://github.com/jsvine/pdfplumber)
 * **Styling & UI**: Custom HTML5 & CSS3 variables (Outfit / Syne fonts, neon glow box-shadows)
 
@@ -38,7 +73,7 @@ Built with **Streamlit** and heavily customized with a **cyberpunk glassmorphic 
 
 ### Prerequisites
 * Python 3.9 or higher installed.
-* A Groq API Key (get one for free at [console.groq.com](https://console.groq.com/)).
+* A Hugging Face Access Token — get one for free at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
 
 ### Installation
 
@@ -53,20 +88,20 @@ Built with **Streamlit** and heavily customized with a **cyberpunk glassmorphic 
    pip install -r requirements.txt
    ```
 
-3. **Configure your API Key**:
+3. **Configure your Token**:
    Create a folder named `.streamlit` in the root of the project, and create a file inside it named `secrets.toml`:
    ```bash
    mkdir .streamlit
    notepad .streamlit/secrets.toml
    ```
-   Add your Groq API Key in the following format:
+   Add your Hugging Face Token in the following format:
    ```toml
-   GROQ_API_KEY = "your-actual-groq-api-key-here"
+   HF_TOKEN = "your-actual-huggingface-token-here"
    ```
 
 4. **Run the application**:
    ```bash
-   streamlit run mcq_app.py
+   python -m streamlit run mcq_app.py
    ```
    Open your browser to `http://localhost:8501` to start generating quizzes!
 
@@ -74,15 +109,15 @@ Built with **Streamlit** and heavily customized with a **cyberpunk glassmorphic 
 
 ## ☁️ Deploying to the Web (Streamlit Community Cloud)
 
-You can host QuizLab live for free using **Streamlit Community Cloud**:
+You can host QuizLab AI live for free using **Streamlit Community Cloud**:
 
 1. Push this repository to your GitHub account.
 2. Visit [share.streamlit.io](https://share.streamlit.io/) and log in with your GitHub account.
 3. Click **New App**, select your `QuizLab` repository, set the branch to `main`, and the main file path to `mcq_app.py`.
 4. Click **Advanced settings** at the bottom of the page before deploying.
-5. In the **Secrets** field, paste your Groq API Key config:
+5. In the **Secrets** field, paste your Hugging Face Token config:
    ```toml
-   GROQ_API_KEY = "your-actual-groq-api-key-here"
+   HF_TOKEN = "your-actual-huggingface-token-here"
    ```
 6. Click **Save** and then **Deploy!** Your app will be live on a public URL in less than 2 minutes.
 
